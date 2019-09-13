@@ -1,0 +1,194 @@
+---
+title: "Final Kaggle"
+author: "Arthur Hla"
+date: "August 24, 2019"
+output: pdf_document
+---
+
+# library
+```{r}
+install.packages("grep")
+
+library(installr)
+library(dplyr)
+library(reshape)
+library(ROSE)
+library(lattice)
+library(ggplot2)
+library(caret)
+library(ROCR)
+library(DMwR)
+```
+
+```{r}
+data_train <- read.csv("application_train.csv")
+data_test <- read.csv("application_test.csv")
+
+bureau <- read.csv("bureau.csv")
+b_bal <- read.csv("bureau_balance.csv")
+
+p_app <- read.csv("previous_application.csv")
+cc_bal <- read.csv("credit_card_balance.csv")
+cash_bal <- read.csv("POS_CASH_balance.csv")
+installment <- read.csv("installments_payments.csv")
+
+variables <- read.csv("variables.csv")
+```
+
+# BUREAU
+```{r}
+b_bal.dum <- dummyVars(~., data = b_bal)
+b_bal.dum <- predict(b_bal.dum, b_bal)
+b_bal.dum <- as.data.frame(b_bal.dum)
+
+bureau.dum <- dummyVars(~., data = bureau)
+bureau.dum <- predict(bureau.dum, bureau)
+bureau.dum <- as.data.frame(bureau.dum)
+```
+
+```{r}
+str(b_bal.dum)
+b_bal.dum <- b_bal.dum %>% group_by(SK_ID_BUREAU) %>% summarise_each(funs(mean(.,na.rm=T)))
+bureau.dum <- left_join(bureau.dum, b_bal.dum, by = "SK_ID_BUREAU")
+str(bureau.dum)
+bureau.dum <- bureau.dum[,-2]
+bureau.dum <- bureau.dum %>% group_by(SK_ID_CURR) %>% summarise_each(funs(mean(.,na.rm=T)))
+
+```
+
+
+# P_APP
+```{r}
+str(p_app)
+p_app <-  p_app[,-1]
+str(cc_bal)
+cc_bal <- cc_bal[,-1]
+str(cash_bal)
+cash_bal <- cash_bal[,-1]
+str(installment)
+installment <- installment[,-1]
+```
+
+```{r}
+p_app.dum <- dummyVars(~., data = p_app)
+p_app.dum <- predict(p_app.dum, p_app)
+p_app.dum <- as.data.frame(p_app.dum)
+
+cc_bal.dum <- dummyVars(~., data = cc_bal)
+cc_bal.dum <- predict(cc_bal.dum, cc_bal)
+cc_bal.dum <- as.data.frame(cc_bal.dum)
+
+cash_bal.dum <- dummyVars(~., data = cash_bal)
+cash_bal.dum <- predict(cash_bal.dum, cash_bal)
+cash_bal.dum <- as.data.frame(cash_bal.dum)
+
+installment.dum <- dummyVars(~., data = installment)
+installment.dum <- predict(installment.dum, installment)
+installment.dum <- as.data.frame(installment.dum)
+```
+
+```{r}
+p_app.dum <- p_app.dum %>% group_by(SK_ID_CURR) %>% summarise_each(funs(mean(.,na.rm=T)))
+cc_bal.dum <- cc_bal.dum %>% group_by(SK_ID_CURR) %>% summarise_each(funs(mean(.,na.rm=T)))
+cash_bal.dum <- cash_bal.dum %>% group_by(SK_ID_CURR) %>% summarise_each(funs(mean(.,na.rm=T)))
+installment.dum <- installment.dum %>% group_by(SK_ID_CURR) %>% summarise_each(funs(mean(.,na.rm=T)))
+
+p_app.dum <- left_join(p_app.dum, cc_bal.dum, by = "SK_ID_CURR")
+p_app.dum <- left_join(p_app.dum, cash_bal.dum, by = "SK_ID_CURR")
+p_app.dum <- left_join(p_app.dum, installment.dum, by = "SK_ID_CURR")
+```
+
+```{r}
+data.dum <- dummyVars(~., data = data_train)
+data.dum <- predict(data.dum, data_train)
+data.dum <- as.data.frame(data.dum)
+```
+
+```{r}
+# str_replace_all(x, "[^[:alnum:]]", " ") only letter and num
+# str_replace_all(variables, fixed(" "), "") no space
+data.dum <- left_join(data.dum, p_app.dum, by = "SK_ID_CURR" )
+data.dum <- left_join(data.dum, bureau.dum, by = "SK_ID_CURR" )
+variables <- toupper(variables[,2])
+variables <- str_replace_all(variables, "[^[:alnum:]]", " ")
+variables <- str_replace_all(variables, fixed(" "), "")
+
+colnames(data.dum) <- toupper(colnames(data.dum))
+colnames(data.dum) <- str_replace_all(colnames(data.dum), "[^[:alnum:]]", " ")
+colnames(data.dum) <- str_replace_all(colnames(data.dum), fixed(" "), "")
+
+variables[-which(variables %in% colnames(data.dum))] <- paste(variables[-which(variables %in% colnames(data.dum))],"X",sep = "")
+
+data.dum <- data.dum[,which(variables %in% colnames(data.dum))]
+data.dum <- data.dum[,-1]
+```
+
+```{r}
+data.dum$TARGET <- as.factor(ifelse(data.dum$TARGET == 1 , 'diff' , 'other'))
+data.dum <- SMOTE(TARGET ~ ., data.dum, perc.over = 100, perc.under = 600)
+
+write.csv(data.dum, "data.finished.csv")
+
+control <- trainControl(method = 'cv', number = 5, repeats = 3, returnResamp = 'none', summaryFunction = twoClassSummary, classProbs = TRUE)
+
+tune.grid <- expand.grid(eta = c(0.05, 0.075, 0.1),
+                         nrounds = 0,
+                         max_depth = 6:8,
+                         min_child_weight = 2,
+                         colsample_bytree = .5,
+                         gamma = 0,
+                         subsample = 1)
+
+
+set.seed(21)
+Model <-  train(data.dum[,-1], # factor()
+                data.dum[,1],   # numeric only
+                method ="xgbTree",
+                trControl = control,
+                metric = "ROC",
+                preProc = c("center", "scale"),
+                tuneGrid = tune.grid)
+
+```
+
+```{r}
+test.dum <- dummyVars(~., data = data_test)
+test.dum <- predict(test.dum, data_test)
+test.dum <- as.data.frame(test.dum)
+```
+
+```{r}
+test.dum <- left_join(test.dum, p_app.dum, by = "SK_ID_CURR" )
+test.dum <- left_join(test.dum, bureau.dum, by = "SK_ID_CURR" )
+
+colnames(test.dum) <- toupper(colnames(test.dum))
+colnames(test.dum) <- str_replace_all(colnames(test.dum), "[^[:alnum:]]", " ")
+colnames(test.dum) <- str_replace_all(colnames(test.dum), fixed(" "), "")
+
+a <- colnames(data.dum)[which(colnames(data.dum) %in% colnames(test.dum))]
+test.dum <- test.dum %>% select(a)
+
+colnames(data.dum)[-which(colnames(data.dum) %in% colnames(test.dum))]
+
+add <- data.frame("CODEGENDERXNA" = c(rep(0,nrow(test.dum))), "NAMEINCOMETYPEMATERNITYLEAVE" = c(rep(0,nrow(test.dum))), "NAMEFAMILYSTATUSUNKNOWN" = c(rep(0,nrow(test.dum))), "TARGET" = c(rep(0,nrow(test.dum))) )
+
+test.dum <- cbind(test.dum, add)
+
+test.dum <- test.dum %>% select(colnames(data.dum))
+```
+
+```{r}
+colnames(data.dum) %in% colnames(test.dum)
+colnames(test.dum) %in% colnames(data.dum)
+
+names(Model)
+
+prob_glm  <- predict(Model, test.dum , type = "prob")
+prob_glm
+
+Predictions <- as.data.frame(cbind(SK_ID_CURR = data_test$SK_ID_CURR , TARGET = prob_glm[,2]))
+Predictions$SK_ID_CURR <- as.integer(Predictions$SK_ID_CURR)
+str(Predictions)
+write.csv(Predictions, "Predictions.csv", row.names = F )
+```
+
